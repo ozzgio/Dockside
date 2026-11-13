@@ -6,7 +6,7 @@ test -x "$APP/Contents/MacOS/Dockside" || { echo "Run zsh build.sh first."; exit
 version=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
 mkdir -p dist
 ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/Dockside-$version-macOS.zip"
-zip -q -r "dist/Dockside-$version-source.zip" Dockside.swift ControlCenter.swift make-icon.swift build.sh package.sh README.md CHANGELOG.md .gitignore assets .cursor research distribution .github docs
+zip -q -r "dist/Dockside-$version-source.zip" Dockside.swift ControlCenter.swift NativeDisplay.swift NativeVirtualDisplay.h NativeVirtualDisplay.m make-icon.swift build.sh package.sh README.md CHANGELOG.md .gitignore assets .cursor research distribution .github docs
 unzip -tqq "dist/Dockside-$version-macOS.zip"
 unzip -tqq "dist/Dockside-$version-source.zip"
 shasum -a 256 "dist/Dockside-$version-macOS.zip" "dist/Dockside-$version-source.zip" > dist/SHA256SUMS.txt

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.0 — experimental native USB preview
+
+- Independent IOHID video transport and native VideoToolbox H.264 encoding for the tested 1280 × 720 Cabletime dock; USB Display is stopped in native mode.
+- Dashboard-only virtual display for mouse controls, direct SwiftUI rendering, hardware cursor updates, and explicit factory-driver fallback.
+- Mac-specific full 12-KiB video reports fix green/blue partial-frame corruption; control remains 4 KiB.
+- Cold-start session initiation, heartbeats throughout startup, first-frame acknowledgement ordering, and bounded frame queuing.
+- Optional focus widget, off by default; disabling it pauses an active timer.
+- Quiet clock, At a glance, and Focus layouts; toggles for activity, history, date, shortcuts, and battery; 80–115% clock size.
+- Retained MIT protocol attribution in source and app downloads; protocol/parser regression checks and a local native-encoder check.
+
+Native USB is experimental, uses a private macOS virtual-display API, and does not mirror arbitrary desktop windows. Physical native-mode coverage is limited to macOS 27.0.1 Apple Silicon and one dock. Signing remains ad hoc; the project license is still pending.
+
 ## 1.2.0 — developer preview
 
 - Native fullscreen, independent header/menu-bar settings, and a menu-bar control.

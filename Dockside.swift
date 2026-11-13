@@ -246,10 +246,14 @@ struct Dashboard: View {
                 }
                 Text("Dockside").font(.system(size: 26, weight: .bold, design: .rounded))
                 Spacer()
-                if let battery = monitor.battery {
+                if preferences.showBattery, let battery = monitor.battery {
                     Image(systemName: monitor.charging ? "battery.100percent.bolt" : battery < 20 ? "battery.25percent" : "battery.100percent")
                     Text("\(battery)%").monospacedDigit()
                 }
+                if preferences.nativeUSB {
+                    Button(action: showControls) { Image(systemName: "slider.horizontal.3").font(.system(size: 28)) }
+                        .buttonStyle(.plain).help("Control Center")
+                } else {
                 Menu {
                     Button("Control Center…", action: showControls)
                     Button(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen", action: toggleFullscreen)
@@ -264,6 +268,7 @@ struct Dashboard: View {
                     Button("Quit Dockside") { NSApp.terminate(nil) }.keyboardShortcut("q")
                 } label: { Image(systemName: "ellipsis.circle.fill").font(.system(size: 28)) }
                 .menuStyle(.borderlessButton).fixedSize().help("Dockside options")
+                }
             }.font(.system(size: 22, weight: .semibold)).frame(height: 44)
             }
 
@@ -272,22 +277,23 @@ struct Dashboard: View {
             } else {
                 if monitor.clockOnly {
                     VStack(spacing: 8) {
-                        clock.font(.system(size: preferences.showSeconds ? 126 : 158, weight: .semibold, design: .rounded))
-                        dateLabel
+                        clock.font(.system(size: (preferences.showSeconds ? 126.0 : 158.0) * Double(preferences.clockPercent) / 100, weight: .semibold, design: .rounded))
+                        if preferences.showDate { dateLabel }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
-                            dateLabel
-                            clock.font(.system(size: preferences.showSeconds ? 100 : 144, weight: .semibold, design: .rounded))
+                            if preferences.showDate { dateLabel }
+                            clock.font(.system(size: (preferences.showSeconds ? 100.0 : 144.0) * Double(preferences.clockPercent) / 100, weight: .semibold, design: .rounded))
                                 .tracking(-6).padding(.leading, -5).minimumScaleFactor(0.8).lineLimit(1)
                             Spacer(minLength: 12)
-                            focus
-                        }.frame(width: 490)
+                            if preferences.showFocus { focus }
+                        }.frame(width: preferences.showActivity ? 490 : nil, alignment: .leading)
+                        if preferences.showActivity {
                         Rectangle().fill(muted.opacity(0.3)).frame(width: 2)
                         VStack(alignment: .leading, spacing: 16) {
                             metric("CPU", value: "\(Int(monitor.cpu.rounded()))%", percent: monitor.cpu)
-                            Sparkline(values: monitor.history, color: blue).frame(height: 30)
+                            if preferences.showHistory { Sparkline(values: monitor.history, color: blue).frame(height: 30) }
                             metric("Memory", value: "\(Int(monitor.memory.rounded()))%", percent: monitor.memory)
                             HStack(spacing: 8) {
                                 Image(systemName: "arrow.down").foregroundStyle(blue)
@@ -301,11 +307,14 @@ struct Dashboard: View {
                             }.font(.system(size: 27, weight: .semibold)).accessibilityLabel("Upload, \(rateText(monitor.upload))")
                             Text("\(monitor.diskFree) free").font(.system(size: 22, weight: .medium)).foregroundStyle(muted)
                         }.frame(maxWidth: .infinity)
+                        }
                     }.frame(maxHeight: .infinity)
                 }
                 HStack(spacing: 12) {
-                    ForEach(0..<preferences.shortcuts.count, id: \.self) { index in
-                        quickButton(preferences.shortcuts[index].title, icon: ["folder.fill", "calendar", "note.text"][index]) { launch(index) }
+                    if preferences.showShortcuts {
+                        ForEach(0..<preferences.shortcuts.count, id: \.self) { index in
+                            quickButton(preferences.shortcuts[index].title, icon: ["folder.fill", "calendar", "note.text"][index]) { launch(index) }
+                        }
                     }
                     Spacer(minLength: 0)
                     Button { monitor.clockOnly.toggle() } label: {
@@ -317,11 +326,13 @@ struct Dashboard: View {
                         Label(monitor.awake ? "Awake" : "Keep awake", systemImage: monitor.awake ? "lightbulb.fill" : "lightbulb")
                             .foregroundStyle(monitor.awake ? yellow : mist).font(.system(size: 18, weight: .semibold)).frame(height: 56)
                     }.buttonStyle(.plain).help("Prevents idle display sleep. Does not control brightness.")
+                    if !preferences.nativeUSB {
                     Button(action: toggleFullscreen) {
                         Image(systemName: monitor.isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                             .font(.system(size: 25)).frame(width: 45, height: 56)
                     }.buttonStyle(.plain).help(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen")
                         .accessibilityLabel(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen")
+                    }
                     Button(action: showControls) {
                         Image(systemName: "slider.horizontal.3").font(.system(size: 27)).frame(width: 45, height: 56)
                     }.buttonStyle(.plain).help("Control Center").accessibilityLabel("Control Center")
@@ -338,7 +349,7 @@ struct Dashboard: View {
             Image(systemName: "display.trianglebadge.exclamationmark").font(.system(size: 45)).foregroundStyle(yellow)
             Text("Your dock display is offline.")
                 .font(.system(size: 38, weight: .bold, design: .rounded))
-            Text("USB Display sends the picture to your Cabletime screen.\nOpen it to connect Dockside to the dock.")
+            Text("Choose native USB in Control Center to connect directly,\nor use the supplied USB Display app as a fallback.")
                 .font(.system(size: 24, weight: .medium)).foregroundStyle(muted).lineSpacing(6)
             HStack(spacing: 20) {
                 Button("Open USB Display", action: openDriver)
@@ -348,7 +359,7 @@ struct Dashboard: View {
                 Button("Preview on this Mac") { monitor.preview = true }
                     .buttonStyle(.plain).font(.system(size: 22, weight: .semibold))
             }
-            Text("Dockside is a dashboard, and requires the dock’s display driver.")
+            Text("Native USB is experimental and supports the tested 1280 × 720 dock.")
                 .font(.system(size: 20, weight: .medium)).foregroundStyle(muted)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -420,8 +431,10 @@ final class DashboardWindow: NSWindow {
     let preferences = Preferences()
     lazy var monitor = Monitor(preferences: preferences)
     let updates = UpdateChecker()
+    let native = NativeDisplay()
     var window: NSWindow!
     private var controls: NSWindow?
+    private var nativeRenderer: ImageRenderer<AnyView>?
     private var statusItem: NSStatusItem?
     private var followDock = true
     private var screenObserver: NSObjectProtocol?
@@ -474,10 +487,7 @@ final class DashboardWindow: NSWindow {
         window.isReleasedWhenClosed = false
         window.backgroundColor = .black
         window.minSize = NSSize(width: 720, height: 430)
-        let hosting = NSHostingView(rootView: Dashboard(monitor: monitor, preferences: preferences,
-            showControls: { [weak self] in self?.showControls() }, toggleFullscreen: { [weak self] in self?.toggleFullscreen() },
-            moveToDock: { [weak self] in self?.showOnDock() }, moveToMac: { [weak self] in self?.showOnMac() },
-            openDriver: { [weak self] in self?.openDriver() }))
+        let hosting = NSHostingView(rootView: dashboard)
         hosting.autoresizingMask = [.width, .height]
         window.contentView = hosting
         placeWindow(enterFullscreen: false)
@@ -486,14 +496,57 @@ final class DashboardWindow: NSWindow {
         if preferences.fullscreenAtLaunch && dockScreen != nil {
             DispatchQueue.main.async { [weak self] in self?.toggleFullscreen() }
         }
-        if preferences.openDriverAtLaunch && dockScreen == nil { openDriver() }
+        native.render = { [weak self] width, height in
+            guard let self else { return nil }
+            if self.nativeRenderer == nil {
+                let renderer = ImageRenderer(content: AnyView(self.dashboard.frame(width: CGFloat(width), height: CGFloat(height))))
+                renderer.proposedSize = ProposedViewSize(width: CGFloat(width), height: CGFloat(height))
+                renderer.scale = 1; renderer.isOpaque = true
+                self.nativeRenderer = renderer
+            }
+            return self.nativeRenderer?.cgImage
+        }
+        native.didConnect = { [weak self] in self?.placeNativeWindow() }
+        native.didStop = { [weak self] in
+            guard let self, self.window != nil else { return }
+            self.nativeRenderer = nil
+            self.monitor.isFullscreen = false
+            self.window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            self.updateScreens()
+            self.placeWindow(enterFullscreen: false)
+        }
+        if preferences.nativeUSB { native.start() }
+        else if preferences.openDriverAtLaunch && dockScreen == nil { openDriver() }
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.screensChanged() }
             }
     }
+    private var dashboard: Dashboard {
+        Dashboard(monitor: monitor, preferences: preferences,
+            showControls: { [weak self] in self?.showControls() }, toggleFullscreen: { [weak self] in self?.toggleFullscreen() },
+            moveToDock: { [weak self] in self?.showOnDock() }, moveToMac: { [weak self] in self?.showOnMac() },
+            openDriver: { [weak self] in self?.openDriver() })
+    }
+    private func placeNativeWindow() {
+        guard native.active, let screen = dockScreen else { return }
+        window.styleMask = [.borderless]
+        window.setFrame(screen.frame, display: true)
+        monitor.displayConnected = true; monitor.isFullscreen = true; monitor.notice = ""
+        window.makeKeyAndOrderFront(nil)
+    }
+    func setNative(_ enabled: Bool) {
+        preferences.nativeUSB = enabled
+        if enabled {
+            if window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+            native.start()
+        } else { native.stop() }
+    }
     private var dockScreen: NSScreen? {
-        NSScreen.screens.first {
+        if native.displayID != 0 {
+            return NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32) == native.displayID }
+        }
+        return NSScreen.screens.first {
             preferences.displayName.isEmpty
                 ? $0.localizedName.localizedCaseInsensitiveContains("HDMI Extender")
                 : $0.localizedName == preferences.displayName
@@ -505,12 +558,16 @@ final class DashboardWindow: NSWindow {
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             panel.title = "Dockside Control Center"
             panel.isReleasedWhenClosed = false
-            panel.contentView = NSHostingView(rootView: ControlCenter(preferences: preferences, monitor: monitor, updates: updates,
-                applyDisplay: { [weak self] in self?.showOnDock() }, toggleFullscreen: { [weak self] in self?.toggleFullscreen() },
+            panel.contentView = NSHostingView(rootView: ControlCenter(preferences: preferences, monitor: monitor, updates: updates, native: native,
+                applyDisplay: { [weak self] in self?.showOnDock() }, setNative: { [weak self] in self?.setNative($0) }, toggleFullscreen: { [weak self] in self?.toggleFullscreen() },
                 openDriver: { [weak self] in self?.openDriver() }))
             panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
             panel.center()
             controls = panel
+        }
+        if let screen = NSScreen.screens.first(where: { $0 != dockScreen }), let controls {
+            let frame = controls.frame
+            controls.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - frame.width / 2, y: screen.visibleFrame.midY - frame.height / 2))
         }
         controls?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -521,21 +578,25 @@ final class DashboardWindow: NSWindow {
         updates.check()
     }
     @objc func showOnDock() {
+        if native.active { placeNativeWindow(); return }
         followDock = true
         placeWindow(enterFullscreen: preferences.fullscreenAtLaunch)
         window.makeKeyAndOrderFront(nil)
     }
     @objc func showOnMac() {
+        if native.active { showControls(); return }
         followDock = false
         placeWindow(enterFullscreen: false)
         window.makeKeyAndOrderFront(nil)
     }
     @objc func toggleFullscreen() {
+        if native.active { showControls(); return }
         guard !transitioning else { return }
         window.makeKeyAndOrderFront(nil)
         window.toggleFullScreen(nil)
     }
     @objc func openDriver() {
+        if preferences.nativeUSB { preferences.nativeUSB = false; native.stop() }
         let candidates = [URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/USB Display.app"),
                           URL(fileURLWithPath: "/Applications/USB Display.app")]
         guard let url = candidates.first(where: { Bundle(url: $0)?.bundleIdentifier == "com.winnerwave.USBDisplay" }) else {
@@ -556,6 +617,8 @@ final class DashboardWindow: NSWindow {
     }
     private func screensChanged() {
         updateScreens()
+        if native.active { placeNativeWindow(); return }
+        if native.starting { return }
         guard !transitioning else { return }
         if window.styleMask.contains(.fullScreen) {
             if followDock && dockScreen == nil { pendingPlacement = true; toggleFullscreen() }
@@ -586,6 +649,7 @@ final class DashboardWindow: NSWindow {
     func windowDidEnterFullScreen(_ notification: Notification) { transitioning = false; monitor.isFullscreen = true }
     func windowDidExitFullScreen(_ notification: Notification) {
         transitioning = false
+        if native.active { placeNativeWindow(); return }
         monitor.isFullscreen = false
         if pendingPlacement {
             pendingPlacement = false
@@ -603,6 +667,8 @@ final class DashboardWindow: NSWindow {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
+        native.didStop = nil
+        native.stop()
         monitor.stop()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
@@ -611,6 +677,7 @@ final class DashboardWindow: NSWindow {
 @main enum Dockside {
     @MainActor static func main() {
         if CommandLine.arguments.contains("--self-test") {
+            do { try NativeDisplay.selfCheck() } catch { fatalError("Native protocol self-check: \(error)") }
             precondition(cpuPercent(previous: [10, 10, 10, 10], current: [20, 20, 40, 20]) == 50)
             precondition(cpuPercent(previous: [0, 0, 0, 0], current: [0, 0, 0, 0]) == 0)
             precondition(cpuPercent(previous: [100, 0, 0, 0], current: [1, 0, 0, 0]) == 0)
@@ -622,6 +689,9 @@ final class DashboardWindow: NSWindow {
             let defaults = UserDefaults(suiteName: testDomain)!
             defer { defaults.removePersistentDomain(forName: testDomain) }
             let preferences = Preferences(defaults: defaults)
+            precondition(!preferences.showFocus)
+            preferences.showFocus = true
+            precondition(Preferences(defaults: defaults).showFocus)
             preferences.theme = .paper
             preferences.focusMinutes = 50
             precondition(Preferences(defaults: defaults).theme == .paper)
@@ -649,7 +719,7 @@ final class DashboardWindow: NSWindow {
             monitor.resetFocus()
             precondition(monitor.focusRemaining == 1500 && !monitor.focusFinished)
             monitor.stop()
-            print("Dockside self-check passed: activity counters, preferences, focus controls, version parsing, and padded clocks.")
+            print("Dockside self-check passed: activity counters, preferences, focus controls, version parsing, padded clocks, USB framing, and malformed H.264 input.")
             return
         }
         let app = NSApplication.shared

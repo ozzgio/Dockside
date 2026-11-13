@@ -1,18 +1,9 @@
-# Dockside 1.2.0 — developer preview
+Dockside 1.3 adds experimental native USB for the tested Cabletime ScreenDock (`1de1:f201`), alongside more dashboard customization.
 
-A native Mac dashboard for Cabletime ScreenDock, now with a Control Center and menu-bar control.
+Enable **Control Center → Power and driver → Use Dockside native USB (experimental)** to send Dockside directly to the panel with USB Display stopped. This mode renders the 1280 × 720 dashboard, supports mouse controls, and uses native H.264 encoding. It does not stream arbitrary applications or the Mac menu bar. **Open USB Display** remains the explicit companion-mode fallback.
 
-- Native fullscreen and configurable header/menu-bar visibility.
-- Seven saved themes, optional clock seconds, and configurable focus duration.
-- Choose the apps opened by the Files, Calendar, and Notes buttons.
-- Correct two-digit clock minutes and seconds.
-- Clearly labeled keep-awake control; panel brightness remains a hardware control.
-- New app icon and explicit GitHub update checks.
+Focus is optional and off by default. Three starting layouts, individual widget toggles, clock sizing, seven themes, and custom app shortcuts are saved locally. The padded clock regression checks remain in place.
 
-**Requirements:** macOS 14+ deployment target, Intel or Apple Silicon, and the USB Display driver supplied with your dock. Tested-version details are in the README.
+This is a developer preview, ad-hoc signed and **not notarized**. The universal build targets macOS 14+; physical native USB testing is limited to macOS 27.0.1 Apple Silicon and one dock. The native virtual display uses a private Apple API that may change. Sleep/wake and older physical systems are not yet verified. Keep the factory app installed while evaluating native USB.
 
-**Preview status:** ad-hoc signed, not notarized. Manual installation/update. Source is public; license is undecided. No vendor binaries, signing credentials, or user preferences are included.
-
-Download the macOS ZIP for the app, or the source ZIP to build it yourself. `SHA256SUMS.txt` contains SHA-256 checksums for both.
-
-The vendor research is preliminary; Dockside does not replace the factory video driver.
+Source is public; the project license is undecided. The MIT notice for the protocol reference is included in the source and app bundle. No vendor software is redistributed.

@@ -5,7 +5,7 @@ description: Investigates the Cabletime ScreenDock USB Display driver for intero
 
 # Vendor display research
 
-Read `research/VENDOR.md` from the project root before investigating. Work on the user's own dock and installed USB Display app. The dashboard is a companion app; do not report a driver replacement until video is shown with every vendor process stopped.
+Read `research/VENDOR.md` from the project root before investigating. Work on the user's own dock and installed USB Display app. Dockside 1.2 is a companion app; 1.3 has an experimental native backend. Read `research/native/README.md` and `NOTICE.md` for the known wire protocol and confirmed independent-video proof. Do not infer full driver compatibility from one successful video test.
 
 Run `zsh research/inspect-vendor.sh` from the project root for a read-only, sanitized inventory. The script validates the expected bundle identifier and prints only relevant code-signing, architecture, configuration, and symbol information. It does not send USB commands or change the vendor app.
 
@@ -15,4 +15,4 @@ Start with the smallest unanswered interoperability question: descriptors and en
 
 Do not guess hardware writes, send firmware-update commands, flash firmware, patch signatures, change macOS security settings, or redistribute the vendor app. Stop an experiment if the USB device resets unexpectedly or the display fails to recover. Restore the original driver path and document the result.
 
-A replacement proof must include: vendor processes stopped; independently generated test frame reaches the physical screen; disconnect/reconnect recovers; CPU/latency measurement; and no vendor library embedded in the implementation.
+For a robust replacement beyond the experimental native preview, verify: vendor processes stopped; independently generated test frame reaches the physical screen; disconnect/reconnect recovers; CPU/latency measurement; and no vendor library embedded in the implementation.

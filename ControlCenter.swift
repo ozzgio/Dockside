@@ -66,9 +66,17 @@ struct LaunchShortcut: Codable, Equatable {
     @Published var hideMenuBar: Bool { didSet { defaults.set(hideMenuBar, forKey: "hideMenuBar") } }
     @Published var clockOnly: Bool { didSet { defaults.set(clockOnly, forKey: "clockOnly") } }
     @Published var showHeader: Bool { didSet { defaults.set(showHeader, forKey: "showHeader") } }
+    @Published var showFocus: Bool { didSet { defaults.set(showFocus, forKey: "showFocus") } }
+    @Published var showActivity: Bool { didSet { defaults.set(showActivity, forKey: "showActivity") } }
+    @Published var showDate: Bool { didSet { defaults.set(showDate, forKey: "showDate") } }
+    @Published var showShortcuts: Bool { didSet { defaults.set(showShortcuts, forKey: "showShortcuts") } }
+    @Published var showBattery: Bool { didSet { defaults.set(showBattery, forKey: "showBattery") } }
+    @Published var showHistory: Bool { didSet { defaults.set(showHistory, forKey: "showHistory") } }
+    @Published var clockPercent: Int { didSet { defaults.set(clockPercent, forKey: "clockPercent") } }
     @Published var showSeconds: Bool { didSet { defaults.set(showSeconds, forKey: "showSeconds") } }
     @Published var focusMinutes: Int { didSet { defaults.set(focusMinutes, forKey: "focusMinutes") } }
     @Published var displayName: String { didSet { defaults.set(displayName, forKey: "displayName") } }
+    @Published var nativeUSB: Bool { didSet { defaults.set(nativeUSB, forKey: "nativeUSB") } }
     @Published var openDriverAtLaunch: Bool { didSet { defaults.set(openDriverAtLaunch, forKey: "openDriverAtLaunch") } }
     @Published var shortcuts: [LaunchShortcut] { didSet {
         if let data = try? JSONEncoder().encode(shortcuts) { defaults.set(data, forKey: "shortcuts") }
@@ -83,9 +91,17 @@ struct LaunchShortcut: Codable, Equatable {
         hideMenuBar = defaults.bool(forKey: "hideMenuBar")
         clockOnly = defaults.bool(forKey: "clockOnly")
         showSeconds = defaults.bool(forKey: "showSeconds")
+        showFocus = defaults.bool(forKey: "showFocus")
+        showActivity = defaults.object(forKey: "showActivity") as? Bool ?? true
+        showDate = defaults.object(forKey: "showDate") as? Bool ?? true
+        showShortcuts = defaults.object(forKey: "showShortcuts") as? Bool ?? true
+        showBattery = defaults.object(forKey: "showBattery") as? Bool ?? true
+        showHistory = defaults.object(forKey: "showHistory") as? Bool ?? true
+        clockPercent = min(115, max(80, defaults.object(forKey: "clockPercent") as? Int ?? 100))
         let savedMinutes = defaults.object(forKey: "focusMinutes") as? Int ?? 25
         focusMinutes = min(120, max(5, savedMinutes))
         displayName = defaults.string(forKey: "displayName") ?? ""
+        nativeUSB = defaults.bool(forKey: "nativeUSB")
         openDriverAtLaunch = defaults.bool(forKey: "openDriverAtLaunch")
         if let data = defaults.data(forKey: "shortcuts"),
            let saved = try? JSONDecoder().decode([LaunchShortcut].self, from: data),
@@ -163,7 +179,9 @@ struct ControlCenter: View {
     @ObservedObject var preferences: Preferences
     @ObservedObject var monitor: Monitor
     @ObservedObject var updates: UpdateChecker
+    @ObservedObject var native: NativeDisplay
     let applyDisplay: () -> Void
+    let setNative: (Bool) -> Void
     let toggleFullscreen: () -> Void
     let openDriver: () -> Void
     var body: some View {
@@ -172,7 +190,7 @@ struct ControlCenter: View {
                 if let icon = NSApp.applicationIconImage { Image(nsImage: icon).resizable().frame(width: 48, height: 48) }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Dockside Control Center").font(.title2.bold())
-                    Text(monitor.displayConnected ? "Display connected" : "Display offline — USB Display is required").foregroundStyle(.secondary)
+                    Text(native.active ? "Connected directly with Dockside native USB" : monitor.displayConnected ? "Display connected" : "Display offline — choose a connection below").foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -183,12 +201,12 @@ struct ControlCenter: View {
                             Text("Automatic — Cabletime / HDMI Extender").tag("")
                             ForEach(preferences.screenNames, id: \.self) { Text($0).tag($0) }
                         }
-                        Toggle("Open dashboard in fullscreen", isOn: $preferences.fullscreenAtLaunch)
+                        Toggle("Open dashboard in fullscreen", isOn: $preferences.fullscreenAtLaunch).disabled(native.active)
                         Toggle("Show Dockside header in fullscreen", isOn: $preferences.showHeader)
-                        Toggle("Hide Mac menu bar in fullscreen", isOn: $preferences.hideMenuBar)
+                        Toggle("Hide Mac menu bar in fullscreen", isOn: $preferences.hideMenuBar).disabled(native.active)
                         HStack {
                             Button("Apply to display", action: applyDisplay)
-                            Button(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen", action: toggleFullscreen)
+                            Button(native.active ? "Native panel fills screen" : monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen", action: toggleFullscreen).disabled(native.active)
                         }
                         Text("Fullscreen hides the title bar. Apply changes to refresh menu-bar behavior. Control Center is also available from the Dockside menu-bar icon or ⌘,. Press Esc to leave fullscreen.").font(.callout).foregroundStyle(.secondary)
                     }
@@ -197,6 +215,25 @@ struct ControlCenter: View {
                             ForEach(DashboardTheme.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                         }.pickerStyle(.menu)
                         Toggle("Show seconds on the clock", isOn: $preferences.showSeconds)
+                        Stepper("Clock size: \(preferences.clockPercent)%", value: $preferences.clockPercent, in: 80...115, step: 5)
+                    }
+                    Section("Layouts") {
+                        HStack {
+                            Button("Quiet clock") { monitor.clockOnly = true }
+                            Button("At a glance") { monitor.clockOnly = false; preferences.showActivity = true; preferences.showFocus = false }
+                            Button("Focus") { monitor.clockOnly = false; preferences.showActivity = false; preferences.showFocus = true }
+                        }
+                        Text("Start with a layout, then choose the widgets below.").font(.callout).foregroundStyle(.secondary)
+                    }
+                    Section("Widgets") {
+                        Toggle("Focus timer", isOn: $preferences.showFocus).onChange(of: preferences.showFocus) { _, enabled in
+                            if !enabled && monitor.focusRunning { monitor.toggleFocus() }
+                        }
+                        Toggle("Mac activity", isOn: $preferences.showActivity)
+                        Toggle("CPU history graph", isOn: $preferences.showHistory)
+                        Toggle("Date", isOn: $preferences.showDate)
+                        Toggle("App shortcuts", isOn: $preferences.showShortcuts)
+                        Toggle("Battery in header", isOn: $preferences.showBattery)
                         Stepper("Focus session: \(preferences.focusMinutes) minutes", value: $preferences.focusMinutes, in: 5...120, step: 5)
                         Button("Reset timer to this duration") { monitor.resetFocus() }
                     }
@@ -204,7 +241,11 @@ struct ControlCenter: View {
                         Toggle("Keep displays awake", isOn: Binding(get: { monitor.awake }, set: { if $0 != monitor.awake { monitor.toggleAwake() } }))
                         Text(monitor.awake ? "Active: macOS idle display sleep is prevented while Dockside runs." : "Off: macOS uses your normal display-sleep settings.").font(.callout).foregroundStyle(.secondary)
                         Text("This is not a brightness control. Adjust the Cabletime panel’s brightness with its hardware button.").font(.callout).foregroundStyle(.secondary)
-                        Toggle("Open USB Display when Dockside launches", isOn: $preferences.openDriverAtLaunch)
+                        Toggle("Use Dockside native USB (experimental)", isOn: Binding(get: { preferences.nativeUSB }, set: setNative))
+                        Text(native.status).textSelection(.enabled)
+                        Text("Replaces USB Display for this 1280 × 720 dashboard. Native mode fills the panel, supports mouse controls, and does not mirror other apps or the Mac menu bar. It uses a private macOS virtual-display API; hardware testing is currently limited to this dock on macOS 27.").font(.callout).foregroundStyle(.secondary)
+                        if preferences.nativeUSB && !native.active { Button(native.starting ? "Connecting…" : "Retry native USB") { setNative(true) }.disabled(native.starting) }
+                        Toggle("Open USB Display when Dockside launches", isOn: $preferences.openDriverAtLaunch).disabled(preferences.nativeUSB)
                         Button("Open USB Display", action: openDriver)
                     }
                 }.formStyle(.grouped).tabItem { Label("Display & theme", systemImage: "display") }.tag(0)
