@@ -1,0 +1,670 @@
+import AppKit
+import SwiftUI
+import IOKit.ps
+import IOKit.pwr_mgt
+import Darwin
+
+
+func cpuPercent(previous: [UInt64], current: [UInt64]) -> Double {
+    guard previous.count == 4, current.count == 4,
+          zip(previous, current).allSatisfy({ $1 >= $0 }) else { return 0 }
+    let deltas = zip(previous, current).map { $1 - $0 }
+    let total = deltas.reduce(0, +)
+    return total == 0 ? 0 : Double(total - deltas[Int(CPU_STATE_IDLE)]) / Double(total) * 100
+}
+
+func networkRate(previous: UInt64, current: UInt64, elapsed: Double) -> Double {
+    guard elapsed > 0, current >= previous else { return 0 }
+    return Double(current - previous) / elapsed
+}
+
+func rateText(_ bytes: Double) -> String {
+    bytes >= 1_000_000 ? String(format: "%.1f MB/s", bytes / 1_000_000) : String(format: "%.0f KB/s", bytes / 1_000)
+}
+
+@MainActor final class Monitor: ObservableObject {
+    @Published var now = Date()
+    @Published var cpu = 0.0
+    @Published var memory = 0.0
+    @Published var memoryUsed = 0.0
+    @Published var battery: Int?
+    @Published var charging = false
+    @Published var download = 0.0
+    @Published var upload = 0.0
+    @Published var history = Array(repeating: 0.0, count: 48)
+    @Published var diskFree = "—"
+    @Published var focusRemaining = 25 * 60
+    @Published var focusRunning = false
+    @Published var focusFinished = false
+    @Published var awake = false
+    @Published var notice = ""
+    @Published var clockOnly = false { didSet { preferences.clockOnly = clockOnly } }
+    @Published var displayConnected = false
+    @Published var preview = false
+    @Published var isFullscreen = false
+    let preferences: Preferences
+    private var previousCPU: [UInt64]?
+    private var previousNetwork: (UInt64, UInt64, TimeInterval)?
+    private var deadline: Date?
+    private var assertion: IOPMAssertionID = 0
+    private var timer: Timer?
+    private var sampleCount = 0
+
+    init(preferences: Preferences) {
+        self.preferences = preferences
+        clockOnly = preferences.clockOnly
+        focusRemaining = preferences.focusMinutes * 60
+        sample()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sample() }
+        }
+    }
+
+    func sample() {
+        now = Date()
+        var ticks = host_cpu_load_info()
+        var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &ticks) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
+            }
+        }
+        if result == KERN_SUCCESS {
+            let current = [ticks.cpu_ticks.0, ticks.cpu_ticks.1, ticks.cpu_ticks.2, ticks.cpu_ticks.3].map(UInt64.init)
+            if let previousCPU { cpu = cpuPercent(previous: previousCPU, current: current) }
+            previousCPU = current
+        }
+        history.removeFirst()
+        history.append(cpu)
+
+        var vm = vm_statistics64()
+        var vmCount = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let vmResult = withUnsafeMutablePointer(to: &vm) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(vmCount)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &vmCount)
+            }
+        }
+        if vmResult == KERN_SUCCESS {
+            var pageSize: vm_size_t = 0
+            host_page_size(mach_host_self(), &pageSize)
+            // Match activity-monitor style usage: app + wired + compressed, excluding purgeable pages.
+            let pages = UInt64(vm.active_count) + UInt64(vm.inactive_count) + UInt64(vm.wire_count) + UInt64(vm.compressor_page_count)
+            let reclaimable = UInt64(vm.external_page_count) + UInt64(vm.purgeable_count)
+            let used = Double(pages > reclaimable ? pages - reclaimable : 0) * Double(pageSize)
+            memoryUsed = used / 1_073_741_824
+            memory = min(100, max(0, used / Double(ProcessInfo.processInfo.physicalMemory) * 100))
+        }
+
+        var addresses: UnsafeMutablePointer<ifaddrs>?
+        if getifaddrs(&addresses) == 0 {
+            var received: UInt64 = 0
+            var sent: UInt64 = 0
+            var cursor = addresses
+            while let item = cursor {
+                let interface = item.pointee
+                if let address = interface.ifa_addr, address.pointee.sa_family == UInt8(AF_LINK),
+                   String(cString: interface.ifa_name).hasPrefix("en"), let data = interface.ifa_data {
+                    let stats = data.assumingMemoryBound(to: if_data.self).pointee
+                    received += UInt64(stats.ifi_ibytes)
+                    sent += UInt64(stats.ifi_obytes)
+                }
+                cursor = interface.ifa_next
+            }
+            freeifaddrs(addresses)
+            let instant = ProcessInfo.processInfo.systemUptime
+            if let (oldReceived, oldSent, oldInstant) = previousNetwork {
+                download = networkRate(previous: oldReceived, current: received, elapsed: instant - oldInstant)
+                upload = networkRate(previous: oldSent, current: sent, elapsed: instant - oldInstant)
+            }
+            previousNetwork = (received, sent, instant)
+        }
+
+        if sampleCount % 10 == 0 {
+            if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+               let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] {
+                battery = nil
+                for source in sources {
+                    if let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+                       description[kIOPSTypeKey] as? String == kIOPSInternalBatteryType,
+                       let capacity = description[kIOPSCurrentCapacityKey] as? Int {
+                        battery = capacity
+                        charging = description[kIOPSPowerSourceStateKey] as? String == kIOPSACPowerValue
+                        break
+                    }
+                }
+            }
+            if let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+               let capacity = values.volumeAvailableCapacityForImportantUsage {
+                diskFree = ByteCountFormatter.string(fromByteCount: capacity, countStyle: .file)
+            }
+        }
+        sampleCount += 1
+        if let deadline {
+            focusRemaining = max(0, Int(ceil(deadline.timeIntervalSince(now))))
+            if focusRemaining == 0 {
+                self.deadline = nil
+                focusRunning = false
+                focusFinished = true
+                NSSound(named: "Glass")?.play()
+            }
+        }
+    }
+
+    func toggleFocus() {
+        if focusRunning {
+            focusRemaining = max(0, Int(ceil(deadline?.timeIntervalSinceNow ?? 0)))
+            deadline = nil
+            focusRunning = false
+        } else {
+            if focusRemaining == 0 { focusRemaining = preferences.focusMinutes * 60 }
+            focusFinished = false
+            deadline = Date().addingTimeInterval(Double(focusRemaining))
+            focusRunning = true
+        }
+    }
+
+    func resetFocus() {
+        deadline = nil
+        focusRemaining = preferences.focusMinutes * 60
+        focusRunning = false
+        focusFinished = false
+    }
+
+    func toggleAwake() {
+        if awake {
+            guard IOPMAssertionRelease(assertion) == kIOReturnSuccess else {
+                notice = "Couldn’t release keep-awake mode. Quit Dockside to release it."
+                return
+            }
+            awake = false
+            notice = "Keep awake off. Normal display sleep is allowed."
+        } else {
+            let result = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn), "Dockside keep awake" as CFString, &assertion)
+            if result == kIOReturnSuccess {
+                awake = true
+                notice = "Keep awake on. This prevents idle sleep, not dimming or brightness changes."
+            }
+            else { notice = "Couldn’t keep the display awake." }
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        if awake { IOPMAssertionRelease(assertion) }
+    }
+}
+
+struct Sparkline: View {
+    let values: [Double]
+    let color: Color
+    var body: some View {
+        GeometryReader { geo in
+            Path { path in
+                for (index, value) in values.enumerated() {
+                    let point = CGPoint(x: geo.size.width * Double(index) / Double(max(1, values.count - 1)),
+                                        y: geo.size.height * (1 - min(100, max(0, value)) / 100))
+                    if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                }
+            }.stroke(color, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+        }.accessibilityHidden(true)
+    }
+}
+
+struct Dashboard: View {
+    @ObservedObject var monitor: Monitor
+    @ObservedObject var preferences: Preferences
+    let showControls: () -> Void
+    let toggleFullscreen: () -> Void
+    private var ink: Color { preferences.theme.background }
+    private var mist: Color { preferences.theme.foreground }
+    private var blue: Color { preferences.theme.accent }
+    private var muted: Color { preferences.theme.secondary }
+    private var yellow: Color { preferences.theme.focus }
+    let moveToDock: () -> Void
+    let moveToMac: () -> Void
+    let openDriver: () -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                ink
+                content.frame(width: 960, height: 540)
+                    .scaleEffect(min(geometry.size.width / 960, geometry.size.height / 540))
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }
+        }.foregroundStyle(mist).preferredColorScheme(preferences.theme.scheme)
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if !monitor.isFullscreen || preferences.showHeader {
+            HStack(spacing: 12) {
+                if let url = Bundle.main.url(forResource: "DocksideMark", withExtension: "png"),
+                   let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image).resizable().frame(width: 44, height: 44).accessibilityHidden(true)
+                }
+                Text("Dockside").font(.system(size: 26, weight: .bold, design: .rounded))
+                Spacer()
+                if let battery = monitor.battery {
+                    Image(systemName: monitor.charging ? "battery.100percent.bolt" : battery < 20 ? "battery.25percent" : "battery.100percent")
+                    Text("\(battery)%").monospacedDigit()
+                }
+                Menu {
+                    Button("Control Center…", action: showControls)
+                    Button(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen", action: toggleFullscreen)
+                    Divider()
+                    Button("Move to Cabletime screen", action: moveToDock)
+                    Button("Open in a Mac window", action: moveToMac)
+                    Button("Open USB Display", action: openDriver)
+                    Divider()
+                    Button(monitor.clockOnly ? "Show dashboard" : "Show quiet clock") { monitor.clockOnly.toggle() }
+                    Button(monitor.awake ? "Allow display sleep" : "Keep display awake") { monitor.toggleAwake() }
+                    Divider()
+                    Button("Quit Dockside") { NSApp.terminate(nil) }.keyboardShortcut("q")
+                } label: { Image(systemName: "ellipsis.circle.fill").font(.system(size: 28)) }
+                .menuStyle(.borderlessButton).fixedSize().help("Dockside options")
+            }.font(.system(size: 22, weight: .semibold)).frame(height: 44)
+            }
+
+            if !monitor.displayConnected && !monitor.preview {
+                disconnected.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                if monitor.clockOnly {
+                    VStack(spacing: 8) {
+                        clock.font(.system(size: preferences.showSeconds ? 126 : 158, weight: .semibold, design: .rounded))
+                        dateLabel
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    HStack(alignment: .top, spacing: 32) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            dateLabel
+                            clock.font(.system(size: preferences.showSeconds ? 100 : 144, weight: .semibold, design: .rounded))
+                                .tracking(-6).padding(.leading, -5).minimumScaleFactor(0.8).lineLimit(1)
+                            Spacer(minLength: 12)
+                            focus
+                        }.frame(width: 490)
+                        Rectangle().fill(muted.opacity(0.3)).frame(width: 2)
+                        VStack(alignment: .leading, spacing: 16) {
+                            metric("CPU", value: "\(Int(monitor.cpu.rounded()))%", percent: monitor.cpu)
+                            Sparkline(values: monitor.history, color: blue).frame(height: 30)
+                            metric("Memory", value: "\(Int(monitor.memory.rounded()))%", percent: monitor.memory)
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.down").foregroundStyle(blue)
+                                Text(rateText(monitor.download)).monospacedDigit()
+                                Spacer(minLength: 0)
+                            }.font(.system(size: 27, weight: .semibold)).accessibilityLabel("Download, \(rateText(monitor.download))")
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.up").foregroundStyle(blue)
+                                Text(rateText(monitor.upload)).monospacedDigit()
+                                Spacer(minLength: 0)
+                            }.font(.system(size: 27, weight: .semibold)).accessibilityLabel("Upload, \(rateText(monitor.upload))")
+                            Text("\(monitor.diskFree) free").font(.system(size: 22, weight: .medium)).foregroundStyle(muted)
+                        }.frame(maxWidth: .infinity)
+                    }.frame(maxHeight: .infinity)
+                }
+                HStack(spacing: 12) {
+                    ForEach(0..<preferences.shortcuts.count, id: \.self) { index in
+                        quickButton(preferences.shortcuts[index].title, icon: ["folder.fill", "calendar", "note.text"][index]) { launch(index) }
+                    }
+                    Spacer(minLength: 0)
+                    Button { monitor.clockOnly.toggle() } label: {
+                        Image(systemName: monitor.clockOnly ? "rectangle.split.2x1.fill" : "moon.stars.fill")
+                            .font(.system(size: 27)).frame(width: 56, height: 56)
+                    }.buttonStyle(.plain).help(monitor.clockOnly ? "Show dashboard" : "Quiet clock")
+                        .accessibilityLabel(monitor.clockOnly ? "Show dashboard" : "Quiet clock")
+                    Button { monitor.toggleAwake() } label: {
+                        Label(monitor.awake ? "Awake" : "Keep awake", systemImage: monitor.awake ? "lightbulb.fill" : "lightbulb")
+                            .foregroundStyle(monitor.awake ? yellow : mist).font(.system(size: 18, weight: .semibold)).frame(height: 56)
+                    }.buttonStyle(.plain).help("Prevents idle display sleep. Does not control brightness.")
+                    Button(action: toggleFullscreen) {
+                        Image(systemName: monitor.isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 25)).frame(width: 45, height: 56)
+                    }.buttonStyle(.plain).help(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen")
+                        .accessibilityLabel(monitor.isFullscreen ? "Exit fullscreen" : "Enter fullscreen")
+                    Button(action: showControls) {
+                        Image(systemName: "slider.horizontal.3").font(.system(size: 27)).frame(width: 45, height: 56)
+                    }.buttonStyle(.plain).help("Control Center").accessibilityLabel("Control Center")
+                }.frame(height: 56)
+            }
+            if !monitor.notice.isEmpty {
+                Text(monitor.notice).font(.system(size: 20, weight: .medium)).foregroundStyle(yellow).lineLimit(2)
+            }
+        }.padding(32)
+    }
+
+    private var disconnected: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Image(systemName: "display.trianglebadge.exclamationmark").font(.system(size: 45)).foregroundStyle(yellow)
+            Text("Your dock display is offline.")
+                .font(.system(size: 38, weight: .bold, design: .rounded))
+            Text("USB Display sends the picture to your Cabletime screen.\nOpen it to connect Dockside to the dock.")
+                .font(.system(size: 24, weight: .medium)).foregroundStyle(muted).lineSpacing(6)
+            HStack(spacing: 20) {
+                Button("Open USB Display", action: openDriver)
+                    .buttonStyle(.plain).font(.system(size: 24, weight: .bold))
+                    .padding(.horizontal, 24).padding(.vertical, 18)
+                    .background(blue, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(ink)
+                Button("Preview on this Mac") { monitor.preview = true }
+                    .buttonStyle(.plain).font(.system(size: 22, weight: .semibold))
+            }
+            Text("Dockside is a dashboard, and requires the dock’s display driver.")
+                .font(.system(size: 20, weight: .medium)).foregroundStyle(muted)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var clock: some View {
+        Text(clockText(monitor.now, showSeconds: preferences.showSeconds))
+            .monospacedDigit().foregroundStyle(mist).contentTransition(.identity)
+    }
+    private var dateLabel: some View {
+        Text(monitor.now.formatted(.dateTime.weekday(.wide).day().month(.wide)))
+            .font(.system(size: 26, weight: .semibold)).foregroundStyle(muted)
+    }
+    private var focus: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(monitor.focusFinished ? "Focus complete" : "Focus timer")
+                .font(.system(size: 24, weight: .semibold)).foregroundStyle(muted)
+            HStack(spacing: 16) {
+                Text(String(format: "%02d:%02d", monitor.focusRemaining / 60, monitor.focusRemaining % 60))
+                    .font(.system(size: 44, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(monitor.focusRunning ? yellow : mist)
+                Spacer(minLength: 0)
+                Button { monitor.toggleFocus() } label: {
+                    Label(monitor.focusRunning ? "Pause" : "Start", systemImage: monitor.focusRunning ? "pause.fill" : "play.fill")
+                        .font(.system(size: 22, weight: .bold)).padding(.horizontal, 22).frame(height: 56)
+                        .background(yellow, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(ink)
+                }.buttonStyle(.plain)
+                Button { monitor.resetFocus() } label: {
+                    Image(systemName: "arrow.counterclockwise").font(.system(size: 27, weight: .semibold)).frame(width: 44, height: 56)
+                }.buttonStyle(.plain).help("Reset focus timer").accessibilityLabel("Reset focus timer")
+            }
+        }
+    }
+    private func metric(_ title: String, value: String, percent: Double) -> some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.system(size: 24, weight: .semibold)).foregroundStyle(muted)
+                Spacer()
+                Text(value).font(.system(size: 38, weight: .bold, design: .rounded)).monospacedDigit()
+            }
+            GeometryReader { geo in
+                Capsule().fill(muted.opacity(0.2))
+                Capsule().fill(blue).frame(width: geo.size.width * max(0, min(100, percent)) / 100)
+            }.frame(height: 7)
+        }.accessibilityElement(children: .ignore).accessibilityLabel("\(title), \(value)")
+    }
+    private func quickButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon).font(.system(size: 19, weight: .semibold)).lineLimit(1)
+                .padding(.horizontal, 18).frame(height: 56)
+                .background(muted.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain).help("Open \(title)")
+    }
+    private func launch(_ index: Int) {
+        guard preferences.shortcuts.indices.contains(index), let url = preferences.shortcuts[index].applicationURL else {
+            monitor.notice = "App not found. Choose it again in Control Center → Apps."
+            return
+        }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            if error != nil { Task { @MainActor in monitor.notice = "Couldn’t open the app. Choose it again in Control Center." } }
+        }
+    }
+}
+
+final class DashboardWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    let preferences = Preferences()
+    lazy var monitor = Monitor(preferences: preferences)
+    let updates = UpdateChecker()
+    var window: NSWindow!
+    private var controls: NSWindow?
+    private var statusItem: NSStatusItem?
+    private var followDock = true
+    private var screenObserver: NSObjectProtocol?
+    private var transitioning = false
+    private var pendingPlacement = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let menu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About Dockside", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Control Center…", action: #selector(showControls), keyEquivalent: ",").target = self
+        appMenu.addItem(withTitle: "Check for updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Show on preferred display", action: #selector(showOnDock), keyEquivalent: "d").target = self
+        appMenu.addItem(withTitle: "Open in a Mac window", action: #selector(showOnMac), keyEquivalent: "").target = self
+        appMenu.addItem(withTitle: "Open USB Display", action: #selector(openDriver), keyEquivalent: "").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit Dockside", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        menu.addItem(appItem)
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: "View")
+        let full = viewMenu.addItem(withTitle: "Toggle Fullscreen", action: #selector(toggleFullscreen), keyEquivalent: "f")
+        full.target = self
+        full.keyEquivalentModifierMask = [.control, .command]
+        viewMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        viewItem.submenu = viewMenu
+        menu.addItem(viewItem)
+        NSApp.mainMenu = menu
+        let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        status.button?.image = NSImage(systemSymbolName: "rectangle.inset.filled", accessibilityDescription: "Dockside")
+        status.button?.toolTip = "Dockside — dashboard and Control Center"
+        let statusMenu = NSMenu()
+        statusMenu.addItem(withTitle: "Control Center…", action: #selector(showControls), keyEquivalent: "").target = self
+        statusMenu.addItem(withTitle: "Show dashboard", action: #selector(showOnDock), keyEquivalent: "").target = self
+        statusMenu.addItem(withTitle: "Toggle fullscreen", action: #selector(toggleFullscreen), keyEquivalent: "").target = self
+        statusMenu.addItem(withTitle: "Check for updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
+        statusMenu.addItem(withTitle: "Open USB Display", action: #selector(openDriver), keyEquivalent: "").target = self
+        statusMenu.addItem(.separator())
+        statusMenu.addItem(withTitle: "Quit Dockside", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        status.menu = statusMenu
+        statusItem = status
+
+        window = DashboardWindow(contentRect: NSRect(x: 0, y: 0, width: 1008, height: 567),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "Dockside"
+        window.delegate = self
+        window.collectionBehavior = [.fullScreenPrimary]
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .black
+        window.minSize = NSSize(width: 720, height: 430)
+        let hosting = NSHostingView(rootView: Dashboard(monitor: monitor, preferences: preferences,
+            showControls: { [weak self] in self?.showControls() }, toggleFullscreen: { [weak self] in self?.toggleFullscreen() },
+            moveToDock: { [weak self] in self?.showOnDock() }, moveToMac: { [weak self] in self?.showOnMac() },
+            openDriver: { [weak self] in self?.openDriver() }))
+        hosting.autoresizingMask = [.width, .height]
+        window.contentView = hosting
+        placeWindow(enterFullscreen: false)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if preferences.fullscreenAtLaunch && dockScreen != nil {
+            DispatchQueue.main.async { [weak self] in self?.toggleFullscreen() }
+        }
+        if preferences.openDriverAtLaunch && dockScreen == nil { openDriver() }
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.screensChanged() }
+            }
+    }
+    private var dockScreen: NSScreen? {
+        NSScreen.screens.first {
+            preferences.displayName.isEmpty
+                ? $0.localizedName.localizedCaseInsensitiveContains("HDMI Extender")
+                : $0.localizedName == preferences.displayName
+        }
+    }
+    @objc func showControls() {
+        if controls == nil {
+            let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 760),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            panel.title = "Dockside Control Center"
+            panel.isReleasedWhenClosed = false
+            panel.contentView = NSHostingView(rootView: ControlCenter(preferences: preferences, monitor: monitor, updates: updates,
+                applyDisplay: { [weak self] in self?.showOnDock() }, toggleFullscreen: { [weak self] in self?.toggleFullscreen() },
+                openDriver: { [weak self] in self?.openDriver() }))
+            panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+            panel.center()
+            controls = panel
+        }
+        controls?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    @objc func checkUpdates() {
+        preferences.selectedTab = 2
+        showControls()
+        updates.check()
+    }
+    @objc func showOnDock() {
+        followDock = true
+        placeWindow(enterFullscreen: preferences.fullscreenAtLaunch)
+        window.makeKeyAndOrderFront(nil)
+    }
+    @objc func showOnMac() {
+        followDock = false
+        placeWindow(enterFullscreen: false)
+        window.makeKeyAndOrderFront(nil)
+    }
+    @objc func toggleFullscreen() {
+        guard !transitioning else { return }
+        window.makeKeyAndOrderFront(nil)
+        window.toggleFullScreen(nil)
+    }
+    @objc func openDriver() {
+        let candidates = [URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/USB Display.app"),
+                          URL(fileURLWithPath: "/Applications/USB Display.app")]
+        guard let url = candidates.first(where: { Bundle(url: $0)?.bundleIdentifier == "com.winnerwave.USBDisplay" }) else {
+            monitor.notice = "Install the USB Display app supplied with your dock, then open it."
+            return
+        }
+        monitor.notice = "Opening USB Display…"
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
+            Task { @MainActor in self?.monitor.notice = error == nil ? "Allow USB Display’s screen-recording permission if macOS asks." : "Couldn’t open USB Display. Open it from Applications." }
+        }
+    }
+    private func updateScreens() {
+        preferences.screenNames = Array(Set(NSScreen.screens.map(\.localizedName))).sorted()
+        let connected = dockScreen != nil
+        if monitor.displayConnected && !connected { monitor.preview = false }
+        monitor.displayConnected = connected
+        if connected { monitor.notice = "" }
+    }
+    private func screensChanged() {
+        updateScreens()
+        guard !transitioning else { return }
+        if window.styleMask.contains(.fullScreen) {
+            if followDock && dockScreen == nil { pendingPlacement = true; toggleFullscreen() }
+            return
+        }
+        placeWindow(enterFullscreen: followDock && preferences.fullscreenAtLaunch && dockScreen != nil)
+    }
+    private func placeWindow(enterFullscreen: Bool) {
+        updateScreens()
+        if transitioning { return }
+        if window.styleMask.contains(.fullScreen) {
+            pendingPlacement = true
+            toggleFullscreen()
+            return
+        }
+        let screen = followDock ? dockScreen : nil
+        let fallback = NSScreen.screens.first { $0 != dockScreen } ?? NSScreen.main
+        let area = (screen ?? fallback)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let width = min(1008.0, area.width * 0.88)
+        let height = width * 9 / 16 + 28
+        window.setFrame(NSRect(x: area.midX - width / 2, y: area.midY - height / 2, width: width, height: height), display: true)
+        if enterFullscreen && screen != nil {
+            DispatchQueue.main.async { [weak self] in self?.toggleFullscreen() }
+        }
+    }
+    func windowWillEnterFullScreen(_ notification: Notification) { transitioning = true }
+    func windowWillExitFullScreen(_ notification: Notification) { transitioning = true }
+    func windowDidEnterFullScreen(_ notification: Notification) { transitioning = false; monitor.isFullscreen = true }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        transitioning = false
+        monitor.isFullscreen = false
+        if pendingPlacement {
+            pendingPlacement = false
+            placeWindow(enterFullscreen: followDock && preferences.fullscreenAtLaunch && dockScreen != nil)
+        }
+    }
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+        preferences.hideMenuBar
+            ? [.fullScreen, .autoHideDock, .autoHideMenuBar, .autoHideToolbar]
+            : [.fullScreen, .autoHideDock]
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        window.makeKeyAndOrderFront(nil)
+        return true
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationWillTerminate(_ notification: Notification) {
+        monitor.stop()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+    }
+}
+
+@main enum Dockside {
+    @MainActor static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            precondition(cpuPercent(previous: [10, 10, 10, 10], current: [20, 20, 40, 20]) == 50)
+            precondition(cpuPercent(previous: [0, 0, 0, 0], current: [0, 0, 0, 0]) == 0)
+            precondition(cpuPercent(previous: [100, 0, 0, 0], current: [1, 0, 0, 0]) == 0)
+            precondition(networkRate(previous: 100, current: 300, elapsed: 2) == 100)
+            precondition(networkRate(previous: 300, current: 100, elapsed: 2) == 0)
+            precondition(networkRate(previous: 100, current: 300, elapsed: 0) == 0)
+            precondition(rateText(1_500_000) == "1.5 MB/s")
+            let testDomain = "Dockside-self-test-\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: testDomain)!
+            defer { defaults.removePersistentDomain(forName: testDomain) }
+            let preferences = Preferences(defaults: defaults)
+            preferences.theme = .paper
+            preferences.focusMinutes = 50
+            precondition(Preferences(defaults: defaults).theme == .paper)
+            precondition(Preferences(defaults: defaults).focusMinutes == 50)
+            defaults.set(-99, forKey: "focusMinutes")
+            precondition(Preferences(defaults: defaults).focusMinutes == 5)
+            preferences.focusMinutes = 25
+            var clockCalendar = Calendar(identifier: .gregorian)
+            clockCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let clockDate = clockCalendar.date(from: DateComponents(year: 2026, month: 11, day: 13, hour: 20, minute: 1, second: 5))!
+            precondition(clockText(clockDate, showSeconds: false, calendar: clockCalendar) == "20:01")
+            precondition(clockText(clockDate, showSeconds: true, calendar: clockCalendar) == "20:01:05")
+            let midnight = clockCalendar.date(from: DateComponents(year: 2026, month: 11, day: 13, hour: 0, minute: 0, second: 0))!
+            precondition(clockText(midnight, showSeconds: true, calendar: clockCalendar) == "00:00:00")
+            precondition(versionNumbers("v1.2.0") == [1, 2, 0])
+            precondition(versionNumbers("1.2") == [1, 2, 0])
+            precondition(versionNumbers("1.bad.3") == nil)
+            precondition(versionNumbers("v1.2.0-beta") == nil)
+            let monitor = Monitor(preferences: preferences)
+            precondition(monitor.memory.isFinite && (0...100).contains(monitor.memory))
+            monitor.toggleFocus()
+            precondition(monitor.focusRunning && monitor.focusRemaining == 1500)
+            monitor.toggleFocus()
+            precondition(!monitor.focusRunning && (1499...1500).contains(monitor.focusRemaining))
+            monitor.resetFocus()
+            precondition(monitor.focusRemaining == 1500 && !monitor.focusFinished)
+            monitor.stop()
+            print("Dockside self-check passed: activity counters, preferences, focus controls, version parsing, and padded clocks.")
+            return
+        }
+        let app = NSApplication.shared
+        if let identifier = Bundle.main.bundleIdentifier,
+           let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+            running.activate(options: [])
+            return
+        }
+        if let url = Bundle.main.url(forResource: "DocksideApp", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            app.applicationIconImage = icon
+        }
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
