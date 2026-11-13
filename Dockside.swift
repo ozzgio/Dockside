@@ -183,7 +183,7 @@ func rateText(_ bytes: Double) -> String {
                 IOPMAssertionLevel(kIOPMAssertionLevelOn), "Dockside keep awake" as CFString, &assertion)
             if result == kIOReturnSuccess {
                 awake = true
-                notice = "Keep awake on. This prevents idle sleep, not dimming or brightness changes."
+                notice = "Keep awake on. Panel brightness is controlled on the dock."
             }
             else { notice = "Couldn’t keep the display awake." }
         }
