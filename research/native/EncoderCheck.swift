@@ -10,7 +10,8 @@ import VideoToolbox
         context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 1280, height: 360))
         let image = context.makeImage()!
-        let pixels = CFDataGetBytePtr(image.dataProvider!.data!)!
+        let sourceData = image.dataProvider!.data!
+        let pixels = CFDataGetBytePtr(sourceData)!
         print("Source top RGB: \(Array(UnsafeBufferPointer(start: pixels, count: 3))); bottom RGB: \(Array(UnsafeBufferPointer(start: pixels + 719 * image.bytesPerRow, count: 3)))")
         var completed = false, failure: Error?
         let encoder = try DashboardEncoder(width: 1280, height: 720) { result in
@@ -20,6 +21,7 @@ import VideoToolbox
                 completed = true
             }
         }
+        withExtendedLifetime(sourceData) { }
         try encoder.encode(image)
         let deadline = Date().addingTimeInterval(10)
         while !completed && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }

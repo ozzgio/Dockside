@@ -251,7 +251,7 @@ final class DashboardEncoder {
                 let session = device.session ?? "100000"
                 device.session = session
                 try device.send("heartbeat", params: ["session-id": session])
-                heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                heartbeatTimer = commonTimer(1, repeats: true) { [weak self] _ in
                     Task { @MainActor in
                         guard let self, let transport = self.transport, let session = transport.session else { return }
                         do { try transport.send("heartbeat", params: ["session-id": session]) }
@@ -267,7 +267,8 @@ final class DashboardEncoder {
                 virtualDisplay = display
                 for _ in 0..<30 where CGDisplayIsOnline(displayID) != 1 || !NSScreen.screens.contains(where: { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32) == self.displayID }) { try await Task.sleep(for: .milliseconds(100)) }
                 guard displayID != 0, CGDisplayIsOnline(displayID) == 1, NSScreen.screens.contains(where: { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32) == self.displayID }) else { throw ProtocolError(description: "macOS did not activate the native display (id \(displayID), online \(CGDisplayIsOnline(displayID)), screens \(NSScreen.screens.count))") }
-                try device.send("app_tx_mouse_icon_change", params: ["cursor_base64_data": ""])
+                moveBesideDesktop(displayID)
+                try device.send("app_tx_mouse_icon_change", params: ["cursor_base64_data": panelCursor(visible: false)])
                 try device.send("common.data_passthrough", params: ["id": 103, "size": 1, "data": "AQ=="])
                 try device.send("notify-projection-started", request: true)
                 // The panel acknowledges projection only after its first video frame arrives.
@@ -278,8 +279,8 @@ final class DashboardEncoder {
                 }
                 starting = false; active = true; status = "Starting native video…"
                 didConnect?()
-                timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
-                cursorTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in Task { @MainActor in self?.cursor() } }
+                timer = commonTimer(0.5, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
+                cursorTimer = commonTimer(0.1, repeats: true) { [weak self] _ in Task { @MainActor in self?.cursor() } }
                 tick()
             } catch is CancellationError { }
               catch { stop(message: "Native USB: \(error). Retry, or open USB Display as a fallback.") }
@@ -325,10 +326,13 @@ final class DashboardEncoder {
         let inside = screen.frame.contains(point)
         do {
             if inside != cursorVisible {
-                var png = ""
-                if inside, let tiff = NSCursor.arrow.image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let data = bitmap.representation(using: .png, properties: [:]) { png = data.base64EncodedString() }
-                try transport.send("app_tx_mouse_icon_change", params: ["cursor_base64_data": png])
+                try transport.send("app_tx_mouse_icon_change", params: ["cursor_base64_data": panelCursor(visible: inside)])
                 cursorVisible = inside
+            }
+            if inside && point.y < screen.frame.minY + 3 {
+                // Dwelling on a screen's bottom edge pulls the Dock there, under the dashboard; keep the pointer off it.
+                CGWarpMouseCursorPosition(CGPoint(x: point.x, y: NSScreen.screens[0].frame.maxY - screen.frame.minY - 4))
+                CGAssociateMouseAndMouseCursorPosition(1)
             }
             if inside {
                 let location = CGPoint(x: min(1279, max(0, point.x - screen.frame.minX)), y: min(719, max(0, screen.frame.maxY - point.y)))
@@ -350,6 +354,7 @@ final class DashboardEncoder {
         active = false; starting = false; busy = false
         cursorVisible = false; lastCursor = nil
         transport = nil; virtualDisplay = nil; status = message
+        NSLog("Dockside native stopped: %@", message)
         didStop?()
     }
     static func selfCheck() throws {
@@ -367,4 +372,43 @@ final class DashboardEncoder {
             do { _ = try annexB(bad); preconditionFailure("Accepted invalid NAL") } catch { }
         }
     }
+}
+
+/// macOS attaches new virtual screens below the main display, which steals its bottom edge and
+/// lets the Dock migrate onto the dashboard. Park the panel top-aligned right of every other screen instead.
+func moveBesideDesktop(_ id: CGDirectDisplayID) {
+    var count: UInt32 = 0
+    guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return }
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetOnlineDisplayList(count, &ids, &count) == .success else { return }
+    let others = ids.prefix(Int(count)).filter { $0 != id && CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }
+    guard let right = others.map({ CGDisplayBounds($0).maxX }).max() else { return }
+    let top = CGDisplayBounds(CGMainDisplayID()).minY
+    if CGDisplayBounds(id).origin == CGPoint(x: right, y: top) { return } // already parked; avoids a reconfigure loop
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success else { return }
+    CGConfigureDisplayOrigin(config, id, Int32(right), Int32(top))
+    if CGCompleteDisplayConfiguration(config, .forSession) != .success { CGCancelDisplayConfiguration(config) }
+}
+
+/// Timers in common modes keep the heartbeat and video running while a menu, picker or permission prompt is open;
+/// default-mode timers pause there and the dock drops to "Connecting signal".
+@discardableResult func commonTimer(_ interval: TimeInterval, repeats: Bool, block: @escaping @Sendable (Timer) -> Void) -> Timer {
+    let timer = Timer(timeInterval: interval, repeats: repeats, block: block)
+    RunLoop.main.add(timer, forMode: .common)
+    return timer
+}
+/// The panel draws the image with its top-left at the pointer, so crop the arrow to its hotspot and scale it for the small screen.
+/// An empty string does not hide the panel cursor, so "hidden" is a transparent pixel.
+@MainActor func panelCursor(visible: Bool, scale: CGFloat = 2) -> String {
+    let arrow = NSCursor.arrow, hot = arrow.hotSpot, size = arrow.image.size
+    let width = visible ? Int((size.width - hot.x) * scale) : 1, height = visible ? Int((size.height - hot.y) * scale) : 1
+    guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
+        hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return "" }
+    if visible {
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        arrow.image.draw(in: NSRect(x: -hot.x * scale, y: CGFloat(height) - (size.height - hot.y) * scale, width: size.width * scale, height: size.height * scale))
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    return bitmap.representation(using: .png, properties: [:])?.base64EncodedString() ?? ""
 }

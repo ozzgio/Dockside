@@ -1,31 +1,34 @@
 # Dockside
 
-<img src="assets/icon-128.png" width="96" height="96" alt="Dockside: a violet desk display with a clock and orange dock base">
+<img src="assets/icon-128.png" width="96" height="96" alt="Dockside: a small light-blue desk display on a dock base with an amber signal light">
 
 A native Mac dashboard for the little screen on your Cabletime ScreenDock.
 
 [Project page](https://ozzgio.github.io/Dockside/) · [Developer previews](https://github.com/ozzgio/Dockside/releases) · [Issues](https://github.com/ozzgio/Dockside/issues)
 
-Large, correctly padded clock digits, live Mac activity, optional focus, seven themes, selectable widgets, and the apps you choose. A separate Control Center handles setup; a menu-bar icon keeps those controls close.
+Large, correctly padded clock digits, live Mac activity, optional focus, seven themes, selectable widgets, and the apps you choose. A separate Settings window handles setup; a menu-bar icon keeps those controls close.
 
 **The source is public, but the license is undecided.** No open-source reuse license is granted yet. This is an independent project, with no affiliation to CABLETIME or EZCast.
 
 **1.3 adds experimental native USB.** Dockside can send its own dashboard directly to the tested `1de1:f201` Cabletime dock, with USB Display stopped. Native mode uses a private macOS virtual-display API and is limited to this 1280 × 720 dashboard; it does not mirror other apps or the Mac menu bar. The supplied USB Display app remains an optional companion-mode fallback. No vendor binary or library is included.
 
+**1.4** adds the Today page, a simpler bottom bar, and a new icon. In native mode Dockside places its panel to the right of your Mac displays, so the Mac’s Dock stays on your main screen instead of moving under the dashboard.
+
 ## Getting started
 
 1. Connect the dock and open Dockside.
-2. Open **Control Center** using the sliders button, the Dockside menu-bar icon, or **⌘,**.
+2. Open **Settings** using the Settings button on the dashboard, the Dockside menu-bar icon, or **⌘,**.
 3. Under **Power and driver**, enable **Use Dockside native USB (experimental)**. Dockside quits USB Display before opening its own video connection. Keep the supplied app installed while evaluating this preview.
-4. Choose a layout, theme, widget visibility, clock size, and shortcut apps.
+4. Choose a theme, widget visibility, clock size, shortcut apps, and the Today utilities.
 
 If native USB fails, try **Retry native USB** after reconnecting the cable. **Open USB Display** switches off native USB and opens the supplied driver. In companion mode, allow that app's screen-recording permission if requested, select its **HDMI Extender** display, and use **1280 × 720** to match the tested stream.
 
 ## Make it yours
 
-- **Fullscreen:** native USB always fills the panel, without a title bar. In companion mode, macOS fullscreen is available from the dashboard, Control Center, or **Control–⌘–F**. Press **Esc** to leave. The Dockside header and Mac menu-bar behavior have separate settings.
+- **Fullscreen:** native USB always fills the panel, without a title bar. In companion mode, macOS fullscreen is available from Settings, the menu-bar icon, or **Control–⌘–F**. Press **Esc** to leave. The Dockside header and Mac menu-bar behavior have separate settings.
 - **Themes:** Midnight, Ocean, Paper, Graphite, Forest, Plum, and Sunset. Theme and clock preferences are saved locally.
-- **Layouts and widgets:** start with Quiet clock, At a glance, or Focus. Independently show/hide Mac activity, CPU history, date, app shortcuts, and header battery. Focus is off by default.
+- **Pages and widgets:** switch between **Overview**, **Clock**, and **Today** from the bar at the bottom of the dock screen. Independently show/hide Mac activity, CPU history, date, app shortcuts, and header battery. Focus is off by default.
+- **Today:** today’s calendar agenda and reminders (read-only, after you allow access), a second-timezone clock, optional Open-Meteo weather by city name, Mac sound volume, and a picture dimmer. Each piece is optional in **Settings → Utilities**.
 - **Clock:** choose 80–115% size; 24-hour time with two-digit hours/minutes, and optional two-digit seconds. Quiet-clock mode is also saved.
 - **App buttons:** choose any installed `.app` for Files, Calendar, and Notes. Labels follow your selected apps; the Mac’s global defaults are not modified. Use **Reset** on a row to restore the original app.
 - **Focus:** enable it in Widgets when wanted, then choose a duration from 5 to 120 minutes, then start, pause, or reset the timer. Hiding the focus widget pauses a running timer. An active session keeps its current duration until you reset it.
@@ -36,9 +39,9 @@ If the driver or dock disappears, Dockside explains the missing connection on th
 
 ## Product updates
 
-**Control Center → Updates & project** checks public GitHub releases on request, including developer previews. Downloads and installation are manual. No updater executes a downloaded file.
+**Settings → Updates & project** checks public GitHub releases on request, including developer previews. Downloads and installation are manual. No updater executes a downloaded file.
 
-A tag such as `v1.3.0` runs the build matrix before the release workflow publishes a developer-preview app ZIP, source ZIP, and checksums. Main-branch pushes and pull requests run the same build/self-check jobs.
+A tag such as `v1.4.0` runs the build matrix before the release workflow publishes a developer-preview app ZIP, source ZIP, and checksums. Main-branch pushes and pull requests run the same build/self-check jobs.
 
 The distributed app is **ad-hoc signed, not notarized**. A smooth public downloaded-app installation requires a maintainer’s Apple Developer ID signature and Apple notarization. No signing credential is configured in this repository or its workflows.
 

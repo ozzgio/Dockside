@@ -1,9 +1,14 @@
-Dockside 1.3 adds experimental native USB for the tested Cabletime ScreenDock (`1de1:f201`), alongside more dashboard customization.
+Dockside 1.4 adds a **Today** page and a calmer, simpler dashboard for the tested Cabletime ScreenDock (`1de1:f201`).
 
-Enable **Control Center → Power and driver → Use Dockside native USB (experimental)** to send Dockside directly to the panel with USB Display stopped. This mode renders the 1280 × 720 dashboard, supports mouse controls, and uses native H.264 encoding. It does not stream arbitrary applications or the Mac menu bar. **Open USB Display** remains the explicit companion-mode fallback.
+**Today** shows today's agenda and reminders (read-only, after you allow access), a second-timezone clock, optional Open-Meteo weather by city name, Mac sound volume, and a picture dimmer. Each piece is optional in **Settings → Utilities**.
 
-Focus is optional and off by default. Three starting layouts, individual widget toggles, clock sizing, seven themes, and custom app shortcuts are saved locally. The padded clock regression checks remain in place.
+The dashboard has one bottom bar: your app shortcuts with their real icons, **Overview / Clock / Today**, and a single labeled **Settings** button. Control Center is now called **Settings**, and the duplicate layout and fullscreen controls are gone. There's a new app icon and a matching menu-bar icon.
 
-This is a developer preview, ad-hoc signed and **not notarized**. The universal build targets macOS 14+; physical native USB testing is limited to macOS 27.0.1 Apple Silicon and one dock. The native virtual display uses a private Apple API that may change. Sleep/wake and older physical systems are not yet verified. Keep the factory app installed while evaluating native USB.
+Native USB fixes:
+- The panel's virtual screen is placed to the right of your Mac displays, so the Mac Dock stays on your main screen and can't cover the dashboard and catch its clicks.
+- Opening a menu, picker or permission prompt no longer pauses the heartbeat and video, which used to drop the dock to "Connecting signal".
+- The panel cursor is larger, and it's hidden while the pointer is on another screen.
+
+This is a developer preview, ad-hoc signed and **not notarized**. The universal build targets macOS 14+; physical native USB testing is limited to macOS 27 Apple Silicon and one dock. Native mode uses a private Apple virtual-display API that may change. Keep the factory USB Display app installed as a fallback.
 
 Source is public; the project license is undecided. The MIT notice for the protocol reference is included in the source and app bundle. No vendor software is redistributed.

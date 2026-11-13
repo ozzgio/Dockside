@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 — Today page and dashboard redesign
+
+- Today page: read-only calendar agenda and reminders, second-timezone clock, optional Open-Meteo weather, Mac sound volume, and a picture dimmer, each optional in Settings → Utilities.
+- One bottom bar: app shortcuts with real app icons, Overview / Clock / Today, and a single labeled Settings button. Control Center renamed Settings; duplicate layout and fullscreen controls removed.
+- New display-and-dock icon generated from one shape list for the app, project page, and a matching menu-bar template icon.
+- Native USB: the virtual screen is parked to the right of the desktop so the Mac Dock can't move under the dashboard and block clicks; the dashboard window sits above the Dock layer on the panel.
+- Native USB: heartbeat, video, cursor, and clock timers run in common run-loop modes, so menus, pickers, and permission prompts no longer drop the dock to "Connecting signal".
+- Native USB: 2× panel cursor aligned to its hotspot, hidden while the pointer is on another screen.
+
 ## 1.3.0 — experimental native USB preview
 
 - Independent IOHID video transport and native VideoToolbox H.264 encoding for the tested 1280 × 720 Cabletime dock; USB Display is stopped in native mode.
