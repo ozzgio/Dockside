@@ -30,8 +30,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Dockside</string>
 <key>CFBundleIconFile</key><string>DocksideApp.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.4.0</string>
-<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>1.4.1</string>
+<key>CFBundleVersion</key><string>6</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>Show today’s events on your Dockside screen. Dockside does not create or edit calendar events.</string>
 <key>NSRemindersFullAccessUsageDescription</key><string>Show unfinished reminders on your Dockside screen. Dockside does not create or edit reminders.</string>

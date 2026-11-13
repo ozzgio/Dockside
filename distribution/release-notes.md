@@ -1,3 +1,5 @@
+**1.4.1** fixes green-stripe corruption on the panel when the pointer left the dock screen in 1.4.0.
+
 Dockside 1.4 adds a **Today** page and a calmer, simpler dashboard for the tested Cabletime ScreenDock (`1de1:f201`).
 
 **Today** shows today's agenda and reminders (read-only, after you allow access), a second-timezone clock, optional Open-Meteo weather by city name, Mac sound volume, and a picture dimmer. Each piece is optional in **Settings → Utilities**.

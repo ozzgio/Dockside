@@ -399,10 +399,11 @@ func moveBesideDesktop(_ id: CGDirectDisplayID) {
     return timer
 }
 /// The panel draws the image with its top-left at the pointer, so crop the arrow to its hotspot and scale it for the small screen.
-/// An empty string does not hide the panel cursor, so "hidden" is a transparent pixel.
+/// An empty string does not hide the panel cursor, and a 1×1 image corrupts the dock's video, so "hidden" is a
+/// fully transparent image the same size as the visible cursor.
 @MainActor func panelCursor(visible: Bool, scale: CGFloat = 2) -> String {
     let arrow = NSCursor.arrow, hot = arrow.hotSpot, size = arrow.image.size
-    let width = visible ? Int((size.width - hot.x) * scale) : 1, height = visible ? Int((size.height - hot.y) * scale) : 1
+    let width = Int((size.width - hot.x) * scale), height = Int((size.height - hot.y) * scale)
     guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return "" }
     if visible {

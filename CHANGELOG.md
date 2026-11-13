@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1 — native cursor fix
+
+- Native USB: leaving the dock screen no longer corrupts the panel picture. The hidden cursor is now a transparent image the same size as the visible one; the dock firmware mishandled the 1×1 image used in 1.4.0.
+
 ## 1.4.0 — Today page and dashboard redesign
 
 - Today page: read-only calendar agenda and reminders, second-timezone clock, optional Open-Meteo weather, Mac sound volume, and a picture dimmer, each optional in Settings → Utilities.
